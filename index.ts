@@ -2,13 +2,13 @@ import express from "express";
 import type { Request, Response } from "express";
 import cors from "cors";
 import { MongoClient, ObjectId } from "mongodb";
-import type { Collection, Document } from "mongodb";
 import dotenv from "dotenv";
 
 dotenv.config();
 
 const app = express();
-const port = 5000;
+// Vercel dynamically assigns a port, so fallback to 5000 only for local dev
+const port = process.env.PORT || 5000;
 
 app.use(cors());
 app.use(express.json());
@@ -17,40 +17,44 @@ if (!process.env.MONGO_URI) {
   throw new Error("MONGO_URI is not defined in environment variables");
 }
 
+// 1. Initialize DB outside of the routes so the connection is cached across warm starts
 const client = new MongoClient(process.env.MONGO_URI);
+const db = client.db("cart-flow");
+const productsCollection = db.collection("products");
+const cartCollection = db.collection("cart");
 
+// Helper function to ensure DB is connected before querying
+let isConnected = false;
+async function ensureDbConnected() {
+  if (!isConnected) {
+    await client.connect();
+    isConnected = true;
+    console.log("Successfully connected to MongoDB");
+  }
+}
 
+// 2. Define routes at the top level
 
 app.get("/", (req: Request, res: Response) => {
-  res.send("Hello World!");
+  res.send("Hello World! Server is running on Vercel.");
 });
 
-async function connectToMongoDB() {
-  try {
-    await client.connect();
-    const db = client.db("cart-flow");
-   const productsCollection = db.collection("products");
-   const cartCollection = db.collection("cart");
-
-
-
-app.post('/products', async(req: Request, res: Response)=>{
-       const product=req.body;
-      const result=await productsCollection.insertOne(product);
-      res.json(result);
+app.post('/products', async(req: Request, res: Response) => {
+  await ensureDbConnected();
+  const product = req.body;
+  const result = await productsCollection.insertOne(product);
+  res.json(result);
 });
-
 
 app.get('/products', async (req: Request, res: Response) => {
   try {
+    await ensureDbConnected();
     const { search, productType, sort } = req.query;
-
     const query: Record<string, unknown> = {};
 
     if (search && typeof search === 'string') {
-      query.productName = { $regex: search, $options: 'i' }; // case-insensitive partial match
+      query.productName = { $regex: search, $options: 'i' };
     }
-
     if (productType && typeof productType === 'string') {
       query.productType = productType;
     }
@@ -71,10 +75,9 @@ app.get('/products', async (req: Request, res: Response) => {
   }
 });
 
-
-
 app.get('/products/user/:userId', async (req: Request, res: Response) => {
   try {
+    await ensureDbConnected();
     const { userId } = req.params;
 
     if (!userId || typeof userId !== 'string') {
@@ -89,9 +92,8 @@ app.get('/products/user/:userId', async (req: Request, res: Response) => {
   }
 });
 
-
-
 app.get('/products/:id', async (req: Request, res: Response) => {
+  await ensureDbConnected();
   const id = req.params.id;
 
   if (!id || typeof id !== 'string' || !ObjectId.isValid(id)) {
@@ -102,9 +104,9 @@ app.get('/products/:id', async (req: Request, res: Response) => {
   res.json(result);
 });
 
-
 app.delete('/products/:id', async (req: Request, res: Response) => {
   try {
+    await ensureDbConnected();
     const { id } = req.params;
 
     if (!id || typeof id !== 'string' || !ObjectId.isValid(id)) {
@@ -116,7 +118,6 @@ app.delete('/products/:id', async (req: Request, res: Response) => {
     if (result.deletedCount === 0) {
       return res.status(404).json({ error: 'Cart item not found' });
     }
-
     res.json({ success: true, deletedCount: result.deletedCount });
   } catch (err) {
     console.error(err);
@@ -124,9 +125,9 @@ app.delete('/products/:id', async (req: Request, res: Response) => {
   }
 });
 
-
 app.patch('/products/:id', async (req: Request, res: Response) => {
   try {
+    await ensureDbConnected();
     const { id } = req.params;
 
     if (!id || typeof id !== 'string' || !ObjectId.isValid(id)) {
@@ -134,7 +135,6 @@ app.patch('/products/:id', async (req: Request, res: Response) => {
     }
 
     const updateData = req.body;
-
     const result = await productsCollection.updateOne(
       { _id: new ObjectId(id) },
       { $set: updateData }
@@ -143,7 +143,6 @@ app.patch('/products/:id', async (req: Request, res: Response) => {
     if (result.matchedCount === 0) {
       return res.status(404).json({ error: 'Product not found' });
     }
-
     res.json(result);
   } catch (err) {
     console.error(err);
@@ -151,28 +150,27 @@ app.patch('/products/:id', async (req: Request, res: Response) => {
   }
 });
 
-
-app.post('/cart', async(req: Request, res: Response)=>{
-       const product=req.body;
-      const result=await cartCollection.insertOne(product);
-      res.json(result);
+app.post('/cart', async(req: Request, res: Response) => {
+  await ensureDbConnected();
+  const product = req.body;
+  const result = await cartCollection.insertOne(product);
+  res.json(result);
 });
 
-
 app.get('/cart/:buyerId', async (req: Request, res: Response) => {
+  await ensureDbConnected();
   const { buyerId } = req.params;
 
   if (!buyerId) {
     return res.status(400).json({ error: 'buyerId is required' });
   }
-
   const result = await cartCollection.find({ buyerId }).toArray();
   res.json(result);
 });
 
-
 app.delete('/cart/:id', async (req: Request, res: Response) => {
   try {
+    await ensureDbConnected();
     const { id } = req.params;
 
     if (!id || typeof id !== 'string' || !ObjectId.isValid(id)) {
@@ -184,7 +182,6 @@ app.delete('/cart/:id', async (req: Request, res: Response) => {
     if (result.deletedCount === 0) {
       return res.status(404).json({ error: 'Cart item not found' });
     }
-
     res.json({ success: true, deletedCount: result.deletedCount });
   } catch (err) {
     console.error(err);
@@ -192,22 +189,12 @@ app.delete('/cart/:id', async (req: Request, res: Response) => {
   }
 });
 
-
-
-
-
-
-
-
-    console.log("You successfully connected to MongoDB!");
-  } catch (err) {
-    console.error(err);
-    process.exit(1);
-  }
+// 3. ONLY use app.listen if we are in local development
+if (process.env.NODE_ENV !== 'production') {
+  app.listen(port, () => {
+    console.log(`Local development server listening on port ${port}`);
+  });
 }
 
-connectToMongoDB().then(() => {
-  app.listen(port, () => {
-    console.log(`Example app listening on port ${port}`);
-  });
-});
+// 4. CRUCIAL: Export the app for Vercel
+export default app;
